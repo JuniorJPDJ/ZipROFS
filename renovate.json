@@ -18,6 +18,6 @@
   ],
   "forkProcessing": "enabled",
   "ignoreDeps": [
-    "ghcr.io/openscopeproject/ziprofs"
+    "ghcr.io/juniorjpdj/ziprofs"
   ]
 }
