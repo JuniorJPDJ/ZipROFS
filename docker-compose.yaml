@@ -1,7 +1,7 @@
 services:
   ziprofs:
     # build: .
-    image: ghcr.io/openscopeproject/ziprofs
+    image: ghcr.io/juniorjpdj/ziprofs
     privileged: true
     volumes:
       - # Root/source directory
