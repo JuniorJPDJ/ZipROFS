@@ -1,7 +1,7 @@
 services:
   ziprofs:
     # build: .
-    image: ghcr.io/juniorjpdj/ziprofs
+    image: ghcr.io/juniorjpdj/ziprofs@sha256:fe331f6bd2d8fae9ec7bb9921116fe9d984c4e6d0201bec141d0e8cbfc4c5f7f
     privileged: true
     volumes:
       - # Root/source directory
