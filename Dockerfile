@@ -1,6 +1,6 @@
 FROM        python:3.13.5-alpine@sha256:9b4929a72599b6c6389ece4ecbf415fd1355129f22bb92bb137eea098f05e975
 
-# renovate: datasource=repology depName=alpine_3_21/fuse versioning=loose
+# renovate: datasource=repology depName=alpine_3_22/fuse versioning=loose
 ARG         FUSE_VERSION="2.9.9-r6"
 
 ARG         TARGETPLATFORM
