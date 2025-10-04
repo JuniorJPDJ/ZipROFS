@@ -21,5 +21,6 @@ COPY        --chown=nobody:nogroup . .
 
 USER        nobody
 ENV         FUSE_LIBRARY_PATH=/usr/lib/libfuse.so.2
+ENV         PYTHONUNBUFFERED=1
 
 ENTRYPOINT  [ "python", "./ziprofs.py" ]
