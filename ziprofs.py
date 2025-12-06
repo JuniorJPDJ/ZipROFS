@@ -33,15 +33,6 @@ def is_zipfile(path, mtime):
     return zipfile.is_zipfile(path)
 
 
-class ZipFile(zipfile.ZipFile):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.__lock = RLock()
-
-    def lock(self):
-        return self.__lock
-
-
 class CachedZipFactory(object):
     MAX_CACHE_SIZE = 1000
     cache = OrderedDict()
@@ -59,9 +50,9 @@ class CachedZipFactory(object):
             val[1].close()
         mtime = os.lstat(path).st_mtime
         self.log.debug("Caching path (%s:%s)", path, mtime)
-        self.cache[path] = (mtime, ZipFile(path))
+        self.cache[path] = (mtime, zipfile.ZipFile(path))
 
-    def get(self, path: str) -> ZipFile:
+    def get(self, path: str) -> zipfile.ZipFile:
         with self.__lock:
             if path in self.cache:
                 self.cache.move_to_end(path)
@@ -83,7 +74,6 @@ class ZipROFS(Operations):
         self.zip_check = zip_check
         # odd file handles are files inside zip, even fhs are system-wide files
         self._zip_file_fh: Dict[int, zipfile.ZipExtFile] = {}
-        self._zip_zfile_fh: Dict[int, ZipFile] = {}
         self._fh_locks: Dict[int, RLock] = {}
         self._lock = RLock()
 
@@ -166,27 +156,29 @@ class ZipROFS(Operations):
         if zip_path:
             with self._lock:
                 fh = self._get_free_zip_fh()
-                zf = self.zip_factory.get(zip_path)
-                self._zip_zfile_fh[fh] = zf
+
+                # Explicitly not use cached zipfile from the factory for open files.
+                # Reading two files from the same zip file is slower due to common locks
+                # and seeking in ZipFile between multiple ZipExtFiles wipe already decompressed seek of previous ZipExtFiles.
+                zf = zipfile.ZipFile(zip_path)
                 self._zip_file_fh[fh] = zf.open(path[len(zip_path) + 1:])
-                return fh
         else:
             fh = os.open(path, flags) << 1
-            self._fh_locks[fh] = RLock()
-            return fh
+
+        self._fh_locks[fh] = RLock()
+        return fh
 
     def read(self, path, size, offset, fh):
-        if fh in self._zip_file_fh:
-            # should be here (file is first opened, then read)
-            f = self._zip_file_fh[fh]
-            with self._zip_zfile_fh[fh].lock():
+        with self._fh_locks[fh]:
+            if fh in self._zip_file_fh:
+                # should be here (file is first opened, then read)
+                f = self._zip_file_fh[fh]
                 if not f.seekable():
                     raise FuseOSError(errno.EBADF)
 
                 f.seek(offset)
                 return f.read(size)
-        else:
-            with self._fh_locks[fh]:
+            else:
                 os.lseek(fh >> 1, offset, 0)
                 return os.read(fh >> 1, size)
 
@@ -213,17 +205,16 @@ class ZipROFS(Operations):
         return result
 
     def release(self, path, fh):
-        if fh in self._zip_file_fh:
-            with self._lock:
-                f = self._zip_file_fh[fh]
-                with self._zip_zfile_fh[fh].lock():
-                    del self._zip_file_fh[fh]
-                    del self._zip_zfile_fh[fh]
-                    return f.close()
-        else:
+        with self._lock:
             with self._fh_locks[fh]:
+                if fh in self._zip_file_fh:
+                    f = self._zip_file_fh[fh]
+                    del self._zip_file_fh[fh]
+                    o = f.close()
+                else:
+                    o = os.close(fh >> 1)
                 del self._fh_locks[fh]
-                return os.close(fh >> 1)
+                return o
 
     def statfs(self, path):
         stv = os.statvfs(path)
