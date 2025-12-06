@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import print_function, absolute_import, division
-
 from functools import lru_cache
 
 from os.path import realpath
@@ -14,7 +12,7 @@ import time
 import zipfile
 import stat
 from threading import RLock
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 try:
     from fuse import FUSE, FuseOSError, Operations, LoggingMixIn, S_IFDIR, fuse_operations
@@ -73,16 +71,17 @@ class ZipROFS(Operations):
         self.root = realpath(root)
         self.zip_check = zip_check
         # odd file handles are files inside zip, even fhs are system-wide files
-        self._zip_file_fh: Dict[int, zipfile.ZipExtFile] = {}
+        self._zip_ext_file_fh: Dict[int, zipfile.ZipExtFile] = {}
+        self._zip_file_fh: Dict[int, zipfile.ZipFile] = {}
         self._fh_locks: Dict[int, RLock] = {}
         self._lock = RLock()
 
     def __call__(self, op, path, *args):
         return super().__call__(op, self.root + path, *args)
 
-    def _get_free_zip_fh(self):
+    def _get_free_zip_fh(self) -> int:
         i = 5   # avoid confusion with stdin/err/out
-        while i in self._zip_file_fh:
+        while i in self._zip_ext_file_fh:
             i += 2
         return i
 
@@ -109,7 +108,7 @@ class ZipROFS(Operations):
             if not os.access(path, mode):
                 raise FuseOSError(errno.EACCES)
 
-    def getattr(self, path, fh=None):
+    def getattr(self, path, fh=None) -> dict:
         zip_path = self.get_zip_path(path)
         st = os.lstat(zip_path) if zip_path else os.lstat(path)
         result = {key: getattr(st, key) for key in (
@@ -151,7 +150,7 @@ class ZipROFS(Operations):
                     pass
         return result
 
-    def open(self, path, flags):
+    def open(self, path, flags) -> int:
         zip_path = self.get_zip_path(path)
         if zip_path:
             with self._lock:
@@ -161,18 +160,19 @@ class ZipROFS(Operations):
                 # Reading two files from the same zip file is slower due to common locks
                 # and seeking in ZipFile between multiple ZipExtFiles wipe already decompressed seek of previous ZipExtFiles.
                 zf = zipfile.ZipFile(zip_path)
-                self._zip_file_fh[fh] = zf.open(path[len(zip_path) + 1:])
+                self._zip_file_fh[fh] = zf
+                self._zip_ext_file_fh[fh] = zf.open(path[len(zip_path) + 1:])
         else:
             fh = os.open(path, flags) << 1
 
         self._fh_locks[fh] = RLock()
         return fh
 
-    def read(self, path, size, offset, fh):
+    def read(self, path, size, offset, fh) -> bytes:
         with self._fh_locks[fh]:
-            if fh in self._zip_file_fh:
+            if fh in self._zip_ext_file_fh:
                 # should be here (file is first opened, then read)
-                f = self._zip_file_fh[fh]
+                f = self._zip_ext_file_fh[fh]
                 if not f.seekable():
                     raise FuseOSError(errno.EBADF)
 
@@ -182,7 +182,7 @@ class ZipROFS(Operations):
                 os.lseek(fh >> 1, offset, 0)
                 return os.read(fh >> 1, size)
 
-    def readdir(self, path, fh):
+    def readdir(self, path, fh) -> List[str]:
         zip_path = self.get_zip_path(path)
         if not zip_path:
             return ['.', '..'] + os.listdir(path)
@@ -204,19 +204,22 @@ class ZipROFS(Operations):
         result.extend(subdirs)
         return result
 
-    def release(self, path, fh):
+    def release(self, path, fh) -> None:
         with self._lock:
             with self._fh_locks[fh]:
-                if fh in self._zip_file_fh:
-                    f = self._zip_file_fh[fh]
-                    del self._zip_file_fh[fh]
-                    o = f.close()
-                else:
-                    o = os.close(fh >> 1)
-                del self._fh_locks[fh]
-                return o
+                if fh in self._zip_ext_file_fh:
+                    f = self._zip_ext_file_fh[fh]
+                    del self._zip_ext_file_fh[fh]
+                    f.close()
 
-    def statfs(self, path):
+                    zf = self._zip_file_fh[fh]
+                    del self._zip_file_fh[fh]
+                    zf.close()
+                else:
+                    os.close(fh >> 1)
+                del self._fh_locks[fh]
+
+    def statfs(self, path) -> dict:
         stv = os.statvfs(path)
         return dict((key, getattr(stv, key)) for key in (
             'f_bavail', 'f_bfree', 'f_blocks', 'f_bsize', 'f_favail',
